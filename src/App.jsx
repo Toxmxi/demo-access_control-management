@@ -10,11 +10,13 @@ import {
 } from 'lucide-react'
 import { createExcelFile } from './exportExcel.js'
 
+// ข้อมูลตั้งต้นสำหรับทดลองในเครื่อง; เมื่อไม่มีข้อมูลใน localStorage ระบบจะใช้ชุดนี้
 const initialBuildings = [
   { id: 'BKK-01', name: 'สำนักงานใหญ่', floors: 12, address: 'อาคารสยามทาวเวอร์, กรุงเทพฯ' },
   { id: 'BKK-02', name: 'อาคารปฏิบัติการ', floors: 8, address: 'ถนนพระราม 9, กรุงเทพฯ' },
   { id: 'CNX-01', name: 'ศูนย์เทคโนโลยีเชียงใหม่', floors: 5, address: 'อำเภอเมือง, เชียงใหม่' },
 ]
+// สร้างเวลาตัวอย่างย้อนหลังสำหรับอุปกรณ์จำลอง ไม่ใช่เวลา telemetry จากอุปกรณ์จริง
 const mockTime = (minutesAgo) => new Date(Date.now() - minutesAgo * 60_000).toLocaleString('sv-SE', { timeZone: 'Asia/Bangkok' }).replace('T', ' ')
 const initialZones = [
   { id: 'Z-001', name: 'พื้นที่ส่วนกลาง', detail: 'พื้นที่ต้อนรับและส่วนกลาง', color: '#47c99a' },
@@ -22,6 +24,7 @@ const initialZones = [
   { id: 'Z-003', name: 'พื้นที่ความปลอดภัยสูง', detail: 'ห้องเซิร์ฟเวอร์และห้องควบคุม', color: '#b18cff' },
   { id: 'Z-004', name: 'พื้นที่จำกัด', detail: 'ต้องได้รับอนุญาตพิเศษ', color: '#f1b84b' },
 ]
+// ข้อมูล Access Control ตัวอย่าง; เปลี่ยนเป็นข้อมูลจาก API ก่อนใช้กับอุปกรณ์จริง
 const initialDevices = [
   { id: 'AC-001', name: 'ประตูทางเข้าหลัก', type: 'เครื่องอ่านบัตร', building: 'BKK-01', floor: '1', door: 'Main Entrance', equipment: 'EQ-AC-1001', model: 'HID Signo 40', zone: 'Z-001', status: 'Active', x: 25, y: 33, updated: mockTime(3) },
   { id: 'AC-002', name: 'ประตูล็อบบี้ฝั่งตะวันตก', type: 'ชุดควบคุมประตู', building: 'BKK-01', floor: '1', door: 'West Lobby', equipment: 'EQ-AC-1002', model: 'HID Signo 20', zone: 'Z-001', status: 'Active', x: 72, y: 53, updated: mockTime(6) },
@@ -47,13 +50,23 @@ const navItems = [
 const statusClass = { Active: 'active', Inactive: 'inactive', Warning: 'warning', Unknown: 'unknown' }
 const statusThai = { Active: 'ทำงานปกติ', Inactive: 'ไม่ทำงาน', Warning: 'แจ้งเตือน', Unknown: 'ไม่ทราบสถานะ' }
 const colorList = ['#47c99a', '#f06b72', '#f1b84b', '#a0a9b8']
+// Keep uploaded plans within localStorage's practical quota for this prototype.
+const maxFloorPlanBytes = 1.5 * 1024 * 1024
+// อ่านข้อมูลที่เก็บใน browser; ใช้ fallback เมื่อยังไม่มีข้อมูลหรือ JSON อ่านไม่ได้
 const readStore = (key, fallback) => {
   try { const value = localStorage.getItem(key); return value ? JSON.parse(value) : fallback } catch { return fallback }
 }
+// บันทึกข้อมูลเฉพาะ browser ปัจจุบัน; localStorage ไม่ซิงก์ข้ามเครื่องหรือผู้ใช้
 const saveStore = (key, value) => localStorage.setItem(key, JSON.stringify(value))
+// จัดรูปแบบ timestamp สำหรับประวัติกิจกรรมที่แสดงใน UI
 const dateTime = () => new Date().toLocaleString('th-TH', { dateStyle: 'medium', timeStyle: 'short' })
+// Escape เครื่องหมายคำพูดใน CSV เพื่อป้องกันค่าที่มี comma หรือ quote ทำให้คอลัมน์เพี้ยน
 const csvCell = (value) => `"${String(value ?? '').replaceAll('"', '""')}"`
 
+/**
+ * คอมโพเนนต์หลัก: เก็บ state ของระบบ, จัดการ CRUD/การนำเข้า-ส่งออก,
+ * และเชื่อมข้อมูลไปยังหน้าต่าง ๆ ปัจจุบันใช้ localStorage สำหรับ prototype เท่านั้น
+ */
 function App() {
   const [user, setUser] = useState(() => readStore('ac_user', null))
   const [page, setPage] = useState('dashboard')
@@ -64,6 +77,8 @@ function App() {
   const [devices, setDevices] = useState(() => readStore('ac_devices', initialDevices))
   const [plans, setPlans] = useState(() => readStore('ac_plans', {}))
   const [audit, setAudit] = useState(() => readStore('ac_audit', [{ action: 'เข้าสู่ระบบ', user: 'System Admin', detail: 'เริ่มต้นใช้งานระบบ', time: '11 พ.ย. 2568 08:00' }]))
+  const plansRef = useRef(plans)
+  const auditRef = useRef(audit)
   const [modal, setModal] = useState(null)
   const [search, setSearch] = useState('')
   const [globalSearch, setGlobalSearch] = useState('')
@@ -77,21 +92,71 @@ function App() {
   const [zoom, setZoom] = useState(1)
   const [offset, setOffset] = useState({ x: 0, y: 0 })
   const [dragging, setDragging] = useState(null)
+  const [positionDraft, setPositionDraft] = useState(null)
   const [notice, setNotice] = useState('')
   const fileInput = useRef(null)
   const mapRef = useRef(null)
+  const noticeTimer = useRef(null)
 
-  useEffect(() => saveStore('ac_buildings', buildings), [buildings])
-  useEffect(() => saveStore('ac_zones', zones), [zones])
-  useEffect(() => saveStore('ac_devices', devices), [devices])
-  useEffect(() => saveStore('ac_plans', plans), [plans])
-  useEffect(() => saveStore('ac_audit', audit), [audit])
-
-  const addAudit = (action, detail) => {
-    const entry = { action, user: user?.name || 'System Admin', detail, time: dateTime() }
-    setAudit((current) => [entry, ...current].slice(0, 100))
+  // เพิ่มรายการกิจกรรมล่าสุด พร้อมผู้ใช้และเวลาปัจจุบัน (เก็บย้อนหลังสูงสุด 100 รายการ)
+  const addAudit = (action, detail, actor = user?.name || 'System Admin') => {
+    const entry = { action, user: actor, detail, time: dateTime() }
+    const nextAudit = [entry, ...auditRef.current].slice(0, 100)
+    if (!persistStore('ac_audit', nextAudit, 'ประวัติกิจกรรม')) return false
+    auditRef.current = nextAudit
+    setAudit(nextAudit)
+    return true
   }
-  const notify = (text) => { setNotice(text); window.setTimeout(() => setNotice(''), 2800) }
+  const notifyAction = (message, auditSaved) => {
+    notify(auditSaved ? message : `${message} แต่บันทึกประวัติกิจกรรมไม่สำเร็จ`)
+  }
+  // แสดง toast หนึ่งรายการในแต่ละครั้ง และล้าง timer เมื่อเปลี่ยนข้อความหรือ unmount
+  const notify = (text) => {
+    if (noticeTimer.current) window.clearTimeout(noticeTimer.current)
+    setNotice(text)
+    noticeTimer.current = window.setTimeout(() => {
+      setNotice('')
+      noticeTimer.current = null
+    }, 2800)
+  }
+  // แจ้งความล้มเหลวจาก quota/security settings แทนการปล่อย storage exception เงียบ ๆ
+  const persistStore = (key, value, label) => {
+    try {
+      saveStore(key, value)
+      return true
+    } catch (error) {
+      console.error(`Unable to save ${key}`, error)
+      notify(`บันทึก${label}ไม่สำเร็จ พื้นที่จัดเก็บในเบราว์เซอร์อาจเต็ม`)
+      return false
+    }
+  }
+  useEffect(() => () => {
+    if (noticeTimer.current) window.clearTimeout(noticeTimer.current)
+  }, [])
+  // เปลี่ยน state หลังยืนยันว่า collection เขียนลง localStorage สำเร็จ
+  const persistBuildings = (nextBuildings) => {
+    if (!persistStore('ac_buildings', nextBuildings, 'อาคาร')) return false
+    setBuildings(nextBuildings)
+    return true
+  }
+  const persistZones = (nextZones) => {
+    if (!persistStore('ac_zones', nextZones, 'Control Zone')) return false
+    setZones(nextZones)
+    return true
+  }
+  const persistPlans = (nextPlans) => {
+    if (!persistStore('ac_plans', nextPlans, 'แผนผัง')) return false
+    plansRef.current = nextPlans
+    setPlans(nextPlans)
+    return true
+  }
+  // บันทึกชุดอุปกรณ์ก่อนเปลี่ยน React state เพื่อไม่รายงานว่าสำเร็จหาก storage เขียนไม่ได้
+  const persistDevices = (nextDevices) => {
+    if (!persistStore('ac_devices', nextDevices, 'อุปกรณ์')) return false
+    setDevices(nextDevices)
+    return true
+  }
+  // สรุปจำนวนอุปกรณ์ตามสถานะใหม่เมื่อรายการอุปกรณ์เปลี่ยน
   const counts = useMemo(() => ({
     total: devices.length,
     Active: devices.filter((d) => d.status === 'Active').length,
@@ -100,15 +165,21 @@ function App() {
     Unknown: devices.filter((d) => d.status === 'Unknown').length,
   }), [devices])
   const building = buildings.find((item) => item.id === selectedBuilding) || buildings[0]
-  const floorDevices = devices.filter((d) => d.building === selectedBuilding && d.floor === selectedFloor)
+  const floorDevices = useMemo(() => devices.filter((d) => d.building === selectedBuilding && d.floor === selectedFloor),
+    [devices, selectedBuilding, selectedFloor])
+  // กรองรายการในหน้าจัดการอุปกรณ์ตามคำค้น สถานะ อาคาร และ Control Zone
   const visibleDevices = useMemo(() => devices.filter((d) => {
     const q = search.toLowerCase()
     const matchesText = !q || [d.id, d.name, d.door, d.model, d.equipment].some((v) => v.toLowerCase().includes(q))
     return matchesText && (statusFilter === 'ทั้งหมด' || d.status === statusFilter) &&
       (buildingFilter === 'ทั้งหมด' || d.building === buildingFilter) && (zoneFilter === 'ทั้งหมด' || d.zone === zoneFilter)
   }), [devices, search, statusFilter, buildingFilter, zoneFilter])
-  const mapFiltered = floorDevices.filter((d) => !mapSearch || [d.id, d.name, d.door].some((v) => v.toLowerCase().includes(mapSearch.toLowerCase())))
+  const mapFiltered = useMemo(() => {
+    const query = mapSearch.toLowerCase()
+    return floorDevices.filter((d) => !query || [d.id, d.name, d.door].some((v) => v.toLowerCase().includes(query)))
+  }, [floorDevices, mapSearch])
 
+  // ตรวจบัญชีตัวอย่างฝั่ง client; ห้ามใช้แทน Authentication จริงใน production
   const signIn = (event) => {
     event.preventDefault()
     const data = new FormData(event.currentTarget)
@@ -121,135 +192,212 @@ function App() {
     const account = accounts.find((item) => item.email === email.toLowerCase() && item.password === pass)
     if (!account) return notify('อีเมลหรือรหัสผ่านไม่ถูกต้อง')
     const nextUser = { name: account.name, email: account.email, role: account.role }
-    setUser(nextUser); saveStore('ac_user', nextUser)
-    const entry = { action: 'เข้าสู่ระบบ', user: nextUser.name, detail: 'เข้าสู่ระบบสำเร็จ', time: dateTime() }
-    setAudit((current) => [entry, ...current]); notify(`ยินดีต้อนรับ ${nextUser.name}`)
+    const sessionSaved = persistStore('ac_user', nextUser, 'session')
+    setUser(nextUser)
+    const auditSaved = addAudit('เข้าสู่ระบบ', 'เข้าสู่ระบบสำเร็จ', nextUser.name)
+    if (sessionSaved) notifyAction(`ยินดีต้อนรับ ${nextUser.name}`, auditSaved)
   }
+  // ออกจากระบบจำลองและล้างข้อมูล session ผู้ใช้จาก browser
   const signOut = () => { addAudit('ออกจากระบบ', 'ออกจากระบบ'); setUser(null); localStorage.removeItem('ac_user') }
+  // เปลี่ยนหน้าและปิดเมนูมือถือ พร้อมล้างอุปกรณ์ที่เลือกไว้บนแผนผัง
   const changePage = (id) => { setPage(id); setMobileMenu(false); setSelectedDevice(null) }
   const canEdit = user?.role !== 'Viewer'
 
+  // ตรวจอาคาร/ชั้นและบันทึกอุปกรณ์ใหม่หรือแก้ไข; พิกัดเดิมติดตามอุปกรณ์ผ่าน ID
   const saveDevice = (data) => {
     const assignedBuilding = buildings.find((item) => item.id === data.building)
     if (!assignedBuilding || Number(data.floor) < 1 || Number(data.floor) > assignedBuilding.floors) return notify('ชั้นที่ระบุต้องอยู่ภายในจำนวนชั้นของอาคาร')
+    let nextDevices; let auditSaved
     if (data._oldId) {
       const { _oldId, ...next } = data
-      setDevices((items) => items.map((item) => item.id === _oldId ? { ...item, ...next, updated: dateTime() } : item))
-      addAudit('แก้ไขอุปกรณ์', `${data.id} — ${data.name}`)
+      if (devices.some((item) => item.id === data.id && item.id !== _oldId)) return notify('Device ID นี้มีอยู่แล้ว')
+      if (!devices.some((item) => item.id === _oldId)) return notify('ไม่พบอุปกรณ์ที่ต้องการแก้ไข กรุณาเปิดรายการอีกครั้ง')
+      nextDevices = devices.map((item) => item.id === _oldId ? { ...item, ...next, updated: dateTime() } : item)
+      if (!persistDevices(nextDevices)) return
+      setSelectedDevice((selected) => selected?.id === _oldId ? nextDevices.find((item) => item.id === data.id) : selected)
+      setPositionDraft((draft) => draft?.id === _oldId ? null : draft)
+      auditSaved = addAudit('แก้ไขอุปกรณ์', `${data.id} — ${data.name}`)
     } else {
       const { _oldId, ...next } = data
-      setDevices((items) => [...items, { ...next, x: Number(next.x) || 50, y: Number(next.y) || 50, updated: dateTime() }])
-      addAudit('เพิ่มอุปกรณ์', `${data.id} — ${data.name}`)
+      nextDevices = [...devices, { ...next, x: Number.isFinite(Number(next.x)) ? Number(next.x) : 50, y: Number.isFinite(Number(next.y)) ? Number(next.y) : 50, updated: dateTime() }]
+      if (!persistDevices(nextDevices)) return
+      auditSaved = addAudit('เพิ่มอุปกรณ์', `${data.id} — ${data.name}`)
     }
-    setModal(null); notify('บันทึกข้อมูลอุปกรณ์แล้ว')
+    setModal(null); notifyAction('บันทึกข้อมูลอุปกรณ์แล้ว', auditSaved)
   }
+  // ยืนยันและลบอุปกรณ์ พร้อมอัปเดต storage และ audit log
   const deleteDevice = (device) => {
     if (!window.confirm(`ยืนยันลบ ${device.id} — ${device.name}?`)) return
-    setDevices((items) => items.filter((d) => d.id !== device.id)); addAudit('ลบอุปกรณ์', `${device.id} — ${device.name}`); setModal(null); notify('ลบอุปกรณ์แล้ว')
+    if (!persistDevices(devices.filter((d) => d.id !== device.id))) return
+    setPositionDraft((draft) => draft?.id === device.id ? null : draft)
+    const auditSaved = addAudit('ลบอุปกรณ์', `${device.id} — ${device.name}`)
+    setModal(null); notifyAction('ลบอุปกรณ์แล้ว', auditSaved)
   }
+  // บันทึกอาคาร โดยห้ามลดจำนวนชั้นจนต่ำกว่าชั้นที่มีอุปกรณ์ติดตั้ง
   const saveBuilding = (data) => {
     const exists = buildings.some((item) => item.id === data.id)
     if (devices.some((device) => device.building === data.id && Number(device.floor) > data.floors)) return notify('ไม่สามารถลดจำนวนชั้นต่ำกว่าชั้นที่มีอุปกรณ์ติดตั้งอยู่')
+    let auditSaved
     if (modal?.type === 'building' && modal.value) {
-      setBuildings((items) => items.map((b) => b.id === modal.value.id ? data : b)); addAudit('แก้ไขอาคาร', `${data.id} — ${data.name}`)
+      const nextBuildings = buildings.map((b) => b.id === modal.value.id ? data : b)
+      if (!persistBuildings(nextBuildings)) return
+      auditSaved = addAudit('แก้ไขอาคาร', `${data.id} — ${data.name}`)
     } else if (exists) return notify('Building ID นี้มีอยู่แล้ว')
-    else { setBuildings((items) => [...items, data]); addAudit('เพิ่มอาคาร', `${data.id} — ${data.name}`) }
-    setModal(null); notify('บันทึกข้อมูลอาคารแล้ว')
+    else {
+      if (!persistBuildings([...buildings, data])) return
+      auditSaved = addAudit('เพิ่มอาคาร', `${data.id} — ${data.name}`)
+    }
+    setModal(null); notifyAction('บันทึกข้อมูลอาคารแล้ว', auditSaved)
   }
+  // ลบอาคารได้เฉพาะเมื่อไม่มีอุปกรณ์เชื่อมโยง
   const deleteBuilding = (item) => {
     if (devices.some((d) => d.building === item.id)) return notify('ยังมีอุปกรณ์เชื่อมโยงกับอาคารนี้')
     if (!window.confirm(`ลบอาคาร ${item.name}?`)) return
-    setBuildings((items) => items.filter((b) => b.id !== item.id)); addAudit('ลบอาคาร', item.name); notify('ลบอาคารแล้ว')
+    if (!persistBuildings(buildings.filter((b) => b.id !== item.id))) return
+    notifyAction('ลบอาคารแล้ว', addAudit('ลบอาคาร', item.name))
   }
+  // เพิ่มหรือแก้ไข Control Zone และป้องกัน ID ซ้ำในกรณีเพิ่มใหม่
   const saveZone = (data) => {
-    if (modal?.value) { setZones((items) => items.map((z) => z.id === modal.value.id ? data : z)); addAudit('แก้ไข Control Zone', data.name) }
+    let auditSaved
+    if (modal?.value) {
+      if (!persistZones(zones.map((z) => z.id === modal.value.id ? data : z))) return
+      auditSaved = addAudit('แก้ไข Control Zone', data.name)
+    }
     else {
       if (zones.some((z) => z.id === data.id)) return notify('Zone ID นี้มีอยู่แล้ว')
-      setZones((items) => [...items, data]); addAudit('เพิ่ม Control Zone', data.name)
+      if (!persistZones([...zones, data])) return
+      auditSaved = addAudit('เพิ่ม Control Zone', data.name)
     }
-    setModal(null); notify('บันทึก Control Zone แล้ว')
+    setModal(null); notifyAction('บันทึก Control Zone แล้ว', auditSaved)
   }
+  // ลบ Zone ได้หลังย้ายอุปกรณ์ที่เชื่อมโยงออกแล้วเท่านั้น
   const deleteZone = (item) => {
     if (devices.some((d) => d.zone === item.id)) return notify('กรุณาย้ายอุปกรณ์ออกจาก Zone ก่อนลบ')
     if (!window.confirm(`ลบ ${item.name}?`)) return
-    setZones((items) => items.filter((z) => z.id !== item.id)); addAudit('ลบ Control Zone', item.name); notify('ลบ Zone แล้ว')
+    if (!persistZones(zones.filter((z) => z.id !== item.id))) return
+    notifyAction('ลบ Zone แล้ว', addAudit('ลบ Control Zone', item.name))
   }
+  // สร้างรายงานอุปกรณ์เป็น CSV โดย escape cell และใส่ BOM เพื่อรองรับภาษาไทย
   const exportCsv = () => {
     const rows = devices.map((d) => [d.id, d.name, d.type, buildings.find((b) => b.id === d.building)?.name || d.building, d.floor, d.door, d.equipment, d.model, zones.find((z) => z.id === d.zone)?.name || d.zone, statusThai[d.status], `${d.x}, ${d.y}`, d.updated])
     const csv = ['Device ID,Device Name,Device Type,Building,Floor,Door Name,Equipment No.,Model,Control Zone,Status,Location X/Y,Last Update', ...rows.map((row) => row.map(csvCell).join(','))].join('\r\n')
     downloadBlob('\ufeff' + csv, 'access-control-report.csv', 'text/csv;charset=utf-8')
-    addAudit('ส่งออกรายงาน CSV', `ส่งออก ${rows.length} รายการ`); notify('ส่งออก CSV สำเร็จ')
+    notifyAction('ส่งออก CSV สำเร็จ', addAudit('ส่งออกรายงาน CSV', `ส่งออก ${rows.length} รายการ`))
   }
+  // สร้าง workbook Excel จากรายการอุปกรณ์ปัจจุบัน
   const exportExcel = () => {
     const columns = ['Device ID', 'Device Name', 'Device Type', 'Building', 'Floor', 'Door Name', 'Equipment No.', 'Model', 'Control Zone', 'Status', 'Location X', 'Location Y', 'Last Update']
     const rows = devices.map((d) => [d.id, d.name, d.type, buildings.find((b) => b.id === d.building)?.name || d.building, Number(d.floor), d.door, d.equipment, d.model, zones.find((z) => z.id === d.zone)?.name || d.zone, statusThai[d.status], d.x, d.y, d.updated])
     downloadBlob(createExcelFile(columns, rows), 'access-control-report.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    addAudit('ส่งออกรายงาน Excel', `ส่งออก ${rows.length} รายการ`); notify('ส่งออก Excel สำเร็จ')
+    notifyAction('ส่งออก Excel สำเร็จ', addAudit('ส่งออกรายงาน Excel', `ส่งออก ${rows.length} รายการ`))
   }
+  // สร้างไฟล์ดาวน์โหลดชั่วคราวจากข้อมูลในหน่วยความจำ
   const downloadBlob = (content, filename, type) => {
     const url = URL.createObjectURL(new Blob([content], { type })); const link = document.createElement('a')
-    link.href = url; link.download = filename; link.click(); URL.revokeObjectURL(url)
+    link.href = url; link.download = filename; link.click()
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
   }
+  // เปิด print dialog ของ browser; ผู้ใช้เลือก Save as PDF เอง
   const exportPdf = () => { addAudit('พิมพ์รายงาน PDF', 'สร้างรายงานสำหรับบันทึกเป็น PDF'); window.print() }
+  // อ่าน floor plan เป็น data URL แล้วเก็บแยกตามรหัสอาคารและชั้น
   const handleUpload = (file) => {
     if (!file) return
     if (!['image/png', 'image/jpeg', 'application/pdf'].includes(file.type)) return notify('รองรับเฉพาะไฟล์ PNG, JPG และ PDF')
+    if (file.size > maxFloorPlanBytes) return notify('ไฟล์แผนผังต้องมีขนาดไม่เกิน 1.5 MB')
+    if (file.size === 0) return notify('ไฟล์แผนผังว่างเปล่า กรุณาเลือกไฟล์ใหม่')
     const key = `${selectedBuilding}-${selectedFloor}`
     const reader = new FileReader()
     reader.onload = () => {
-      setPlans((items) => ({ ...items, [key]: { name: file.name, type: file.type, data: reader.result } }))
-      addAudit('อัปโหลดแผนผัง', `${building?.name || selectedBuilding} ชั้น ${selectedFloor}: ${file.name}`)
-      notify('อัปโหลดแผนผังเรียบร้อยแล้ว')
+      if (typeof reader.result !== 'string') return notify('อ่านไฟล์ไม่สำเร็จ กรุณาลองอีกครั้ง')
+      const nextPlans = { ...plansRef.current, [key]: { name: file.name, type: file.type, data: reader.result } }
+      if (!persistPlans(nextPlans)) return
+      notifyAction('อัปโหลดแผนผังเรียบร้อยแล้ว', addAudit('อัปโหลดแผนผัง', `${building?.name || selectedBuilding} ชั้น ${selectedFloor}: ${file.name}`))
     }
     reader.onerror = () => notify('อ่านไฟล์ไม่สำเร็จ กรุณาลองอีกครั้ง')
     reader.readAsDataURL(file)
   }
-  const updateDevicePosition = (device, x, y) => {
-    setDevices((items) => items.map((d) => d.id === device.id ? { ...d, x: Math.max(2, Math.min(98, x)), y: Math.max(3, Math.min(97, y)), updated: dateTime() } : d))
+  // จำกัดพิกัดหมุดให้อยู่ภายในขอบที่มองเห็นได้ของแผนผัง
+  const clampDevicePosition = (x, y) => {
+    return { x: Math.max(2, Math.min(98, x)), y: Math.max(3, Math.min(97, y)) }
   }
+  // เริ่มลาก marker และจับ pointer เพื่อให้การลากไม่ขาดเมื่อ pointer ออกจากหมุด
   const startMarkerDrag = (event, device) => {
     if (!canEdit) { setSelectedDevice(device); return }
     event.preventDefault(); event.stopPropagation()
-    const rect = mapRef.current?.getBoundingClientRect()
-    if (rect) setDragging({ id: device.id, rect, moved: false })
+    if (positionDraft) return notify('กรุณาบันทึกหรือยกเลิกตำแหน่งที่ค้างอยู่ก่อน')
+    if (mapRef.current) {
+      event.currentTarget.setPointerCapture(event.pointerId)
+      setDragging({ id: device.id, x: device.x, y: device.y, moved: false })
+    }
     setSelectedDevice(device)
   }
+  // คำนวณตำแหน่งร่างระหว่างลาก โดยยังไม่เขียนทับตำแหน่งที่บันทึกไว้
   const moveMarker = (event) => {
-    if (!dragging || !mapRef.current) return
-    const rect = dragging.rect
-    updateDevicePosition({ id: dragging.id }, ((event.clientX - rect.left) / rect.width) * 100, ((event.clientY - rect.top) / rect.height) * 100)
-    if (!dragging.moved) setDragging((current) => current && ({ ...current, moved: true }))
+    if (!dragging || dragging.place || !mapRef.current) return
+    const rect = mapRef.current.getBoundingClientRect()
+    const position = clampDevicePosition(
+      ((event.clientX - rect.left) / rect.width) * 100,
+      ((event.clientY - rect.top) / rect.height) * 100)
+    setDragging((current) => current && ({ ...current, ...position, moved: true }))
   }
+  // จบการลากและคงตำแหน่งใหม่เป็น draft รอผู้ใช้กดยืนยัน
   const endMarkerDrag = () => {
-    if (dragging) {
-      if (dragging.moved) addAudit('ย้ายตำแหน่งอุปกรณ์', `${dragging.id} บน Floor Plan`)
-      setDragging(null)
-    }
+    if (dragging?.moved) setPositionDraft({ id: dragging.id, x: dragging.x, y: dragging.y })
+    setDragging(null)
   }
+  // ยืนยันตำแหน่ง draft ลง localStorage ก่อนอัปเดต audit และแจ้งสำเร็จ
+  const savePosition = () => {
+    if (!positionDraft) return
+    const device = devices.find((item) => item.id === positionDraft.id)
+    if (!device) return notify('ไม่พบอุปกรณ์ที่ต้องการบันทึกตำแหน่ง กรุณาเปิดแผนผังอีกครั้ง')
+    const position = clampDevicePosition(positionDraft.x, positionDraft.y)
+    const nextDevices = devices.map((item) => item.id === device.id ? { ...item, ...position, updated: dateTime() } : item)
+    if (!persistDevices(nextDevices)) return
+    setPositionDraft(null)
+    setSelectedDevice(nextDevices.find((item) => item.id === device.id))
+    notifyAction('บันทึกตำแหน่งอุปกรณ์แล้ว', addAudit('ย้ายตำแหน่งอุปกรณ์', `${device.id} บน Floor Plan`))
+  }
+  // วางอุปกรณ์ที่เลือกลงจุดคลิกบนแผนผังเป็น draft
   const placeDeviceAt = (event) => {
     if (!dragging?.place || !mapRef.current) return
     const rect = mapRef.current.getBoundingClientRect()
-    updateDevicePosition({ id: dragging.id }, ((event.clientX - rect.left) / rect.width) * 100, ((event.clientY - rect.top) / rect.height) * 100)
-    setDragging(null); notify('วางตำแหน่งอุปกรณ์แล้ว')
+    const position = clampDevicePosition(
+      ((event.clientX - rect.left) / rect.width) * 100,
+      ((event.clientY - rect.top) / rect.height) * 100)
+    setPositionDraft({ id: dragging.id, ...position })
+    setDragging(null); notify('ตรวจสอบตำแหน่งแล้วกด “บันทึกตำแหน่ง” เพื่อยืนยัน')
   }
+  // จัดการการลากอุปกรณ์จากรายการด้านข้างมาวางบนแผนผังเป็น draft
   const dropDeviceAt = (event, device) => {
+    if (positionDraft) return notify('กรุณาบันทึกหรือยกเลิกตำแหน่งที่ค้างอยู่ก่อน')
     if (!mapRef.current) return
     const rect = mapRef.current.getBoundingClientRect()
-    updateDevicePosition(device, ((event.clientX - rect.left) / rect.width) * 100, ((event.clientY - rect.top) / rect.height) * 100)
-    setDragging(null); addAudit('ย้ายตำแหน่งอุปกรณ์', `${device.id} บน Floor Plan`); notify('วางตำแหน่งอุปกรณ์แล้ว')
+    const position = clampDevicePosition(
+      ((event.clientX - rect.left) / rect.width) * 100,
+      ((event.clientY - rect.top) / rect.height) * 100)
+    setPositionDraft({ id: device.id, ...position })
+    setDragging(null); notify('ตรวจสอบตำแหน่งแล้วกด “บันทึกตำแหน่ง” เพื่อยืนยัน')
   }
+  // เริ่มลากพื้นหลังเพื่อเลื่อนมุมมอง โดยไม่เริ่ม pan ขณะลาก marker
   const beginPan = (event) => {
     if (event.button !== 0 || dragging) return
+    event.currentTarget.setPointerCapture(event.pointerId)
     setOffset((o) => ({ ...o, startX: event.clientX - o.x, startY: event.clientY - o.y, panning: true }))
   }
+  // เลื่อนแผนผังหรือส่งการเคลื่อนที่ต่อให้ระบบลาก marker
   const movePan = (event) => {
     if (dragging) return moveMarker(event)
     if (offset.panning) setOffset((o) => ({ ...o, x: event.clientX - o.startX, y: event.clientY - o.startY }))
   }
+  // จบการเลื่อนแผนผังและปิดสถานะลาก marker
   const endPan = () => { endMarkerDrag(); if (offset.panning) setOffset((o) => ({ ...o, panning: false })) }
-  const beginPlace = (device) => { setSelectedDevice(device); setDragging({ id: device.id, place: true }); notify('คลิกตำแหน่งบนแผนผังเพื่อวางอุปกรณ์') }
+  // เริ่มโหมดวางตำแหน่งจากรายการอุปกรณ์ด้านข้าง
+  const beginPlace = (device) => {
+    if (positionDraft) return notify('กรุณาบันทึกหรือยกเลิกตำแหน่งที่ค้างอยู่ก่อน')
+    setSelectedDevice(device); setDragging({ id: device.id, place: true }); notify('คลิกตำแหน่งบนแผนผังเพื่อวางอุปกรณ์')
+  }
 
-  if (!user) return <Login onSubmit={signIn} />
+  if (!user) return <Login onSubmit={signIn} notice={notice} />
   return (
     <div className="app-shell">
       {mobileMenu && <button className="mobile-backdrop" onClick={() => setMobileMenu(false)} aria-label="ปิดเมนู" />}
@@ -296,7 +444,7 @@ function App() {
           {page === 'devices' && <DevicesPage devices={visibleDevices} allDevices={devices} buildings={buildings} zones={zones} search={search} setSearch={setSearch} statusFilter={statusFilter} setStatusFilter={setStatusFilter} buildingFilter={buildingFilter} setBuildingFilter={setBuildingFilter} zoneFilter={zoneFilter} setZoneFilter={setZoneFilter} canEdit={canEdit} onAdd={() => setModal({ type: 'device' })} onEdit={(d) => setModal({ type: 'device', value: d })} onDelete={deleteDevice} onLocate={(d) => { setSelectedBuilding(d.building); setSelectedFloor(d.floor); setSelectedDevice(d); changePage('map') }} />}
           {page === 'buildings' && <BuildingsPage buildings={buildings} devices={devices} canEdit={canEdit} onAdd={() => setModal({ type: 'building' })} onEdit={(b) => setModal({ type: 'building', value: b })} onDelete={deleteBuilding} />}
           {page === 'zones' && <ZonesPage zones={zones} devices={devices} canEdit={canEdit} onAdd={() => setModal({ type: 'zone' })} onEdit={(z) => setModal({ type: 'zone', value: z })} onDelete={deleteZone} />}
-          {page === 'map' && <MapPage buildings={buildings} selectedBuilding={selectedBuilding} setSelectedBuilding={(id) => { setSelectedBuilding(id); setSelectedDevice(null) }} selectedFloor={selectedFloor} setSelectedFloor={setSelectedFloor} plan={plans[`${selectedBuilding}-${selectedFloor}`]} floorDevices={mapFiltered} allFloorDevices={floorDevices} zones={zones} selectedDevice={selectedDevice} setSelectedDevice={setSelectedDevice} mapSearch={mapSearch} setMapSearch={setMapSearch} zoom={zoom} setZoom={setZoom} offset={offset} setOffset={setOffset} mapRef={mapRef} dragging={dragging} onUpload={() => fileInput.current?.click()} fileInput={fileInput} onFile={handleUpload} onMarkerDown={startMarkerDrag} onMapDown={beginPan} onMapMove={movePan} onMapUp={endPan} onPlace={placeDeviceAt} onDropDevice={dropDeviceAt} canEdit={canEdit} onDeviceEdit={(d) => setModal({ type: 'device', value: d })} onAdd={() => setModal({ type: 'device', preset: { building: selectedBuilding, floor: selectedFloor } })} onBeginPlace={beginPlace} onLocate={(d) => { setSelectedBuilding(d.building); setSelectedFloor(d.floor); setSelectedDevice(d) }} />}
+          {page === 'map' && <MapPage buildings={buildings} selectedBuilding={selectedBuilding} setSelectedBuilding={(id) => { setSelectedBuilding(id); setSelectedDevice(null) }} selectedFloor={selectedFloor} setSelectedFloor={setSelectedFloor} plan={plans[`${selectedBuilding}-${selectedFloor}`]} floorDevices={mapFiltered} allFloorDevices={floorDevices} zones={zones} selectedDevice={selectedDevice} setSelectedDevice={setSelectedDevice} mapSearch={mapSearch} setMapSearch={setMapSearch} zoom={zoom} setZoom={setZoom} offset={offset} setOffset={setOffset} mapRef={mapRef} dragging={dragging} positionDraft={positionDraft} onSavePosition={savePosition} onCancelPosition={() => setPositionDraft(null)} onUpload={() => fileInput.current?.click()} fileInput={fileInput} onFile={handleUpload} onMarkerDown={startMarkerDrag} onMapDown={beginPan} onMapMove={movePan} onMapUp={endPan} onPlace={placeDeviceAt} onDropDevice={dropDeviceAt} canEdit={canEdit} onDeviceEdit={(d) => setModal({ type: 'device', value: d })} onAdd={() => setModal({ type: 'device', preset: { building: selectedBuilding, floor: selectedFloor } })} onBeginPlace={beginPlace} onLocate={(d) => { setSelectedBuilding(d.building); setSelectedFloor(d.floor); setSelectedDevice(d) }} />}
           {page === 'reports' && <ReportsPage devices={devices} buildings={buildings} zones={zones} counts={counts} exportCsv={exportCsv} exportExcel={exportExcel} exportPdf={exportPdf} />}
           {page === 'audit' && <AuditPage audit={audit} />}
           {page === 'users' && <UsersPage user={user} onSignOut={signOut} />}
@@ -308,7 +456,8 @@ function App() {
   )
 }
 
-function Login({ onSubmit }) {
+// หน้าลงชื่อเข้าใช้สำหรับบัญชีทดลอง และส่งค่าฟอร์มให้ handler ของ App
+function Login({ onSubmit, notice }) {
   const [show, setShow] = useState(false)
   return <main className="login-shell">
     <div className="login-visual">
@@ -327,15 +476,20 @@ function Login({ onSubmit }) {
       <div className="login-demo"><ShieldCheck size={15} /><span>บัญชีทดลอง: <b>admin@sentinel.co.th</b> / <b>sentinel123</b></span></div>
       <div className="login-demo viewer-demo"><Eye size={15} /><span>ทดลองสิทธิ์ Viewer: <b>viewer@sentinel.co.th</b> / <b>demo123</b></span></div>
     </form><div className="login-copyright">ระบบ Access Control Management <span>·</span> v1.0.0</div></div>
+    {notice && <div className="toast" role="alert"><AlertTriangle size={16} />{notice}</div>}
   </main>
 }
 
+// หัวหน้ามาตรฐานสำหรับชื่อหน้า คำอธิบาย และปุ่ม action เสริม
 function PageHeader({ eyebrow, title, description, action }) {
   return <div className="page-header"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1>{description && <p>{description}</p>}</div>{action}</div>
 }
+// แปลงสถานะอุปกรณ์เป็น badge สีและข้อความภาษาไทย
 function StatusBadge({ status }) { return <span className={`status-badge status-${statusClass[status]}`}><i />{statusThai[status] || status}</span> }
+// Dashboard แสดง KPI, กราฟ, สถานะ และรายการอุปกรณ์ที่ต้องตรวจสอบ
 function Dashboard({ devices, buildings, zones, counts, setPage, onSelect }) {
   const statusData = ['Active', 'Inactive', 'Warning', 'Unknown'].map((key, i) => ({ name: statusThai[key], value: counts[key], color: colorList[i], key }))
+  // ข้อมูลแนวโน้มนี้ยังเป็นค่าตัวอย่าง; เชื่อม API/telemetry ก่อนเรียกว่า real-time
   const chartData = [{ name: 'จ.', active: 32, issue: 3 }, { name: 'อ.', active: 35, issue: 2 }, { name: 'พ.', active: 34, issue: 4 }, { name: 'พฤ.', active: 38, issue: 3 }, { name: 'ศ.', active: 36, issue: 5 }, { name: 'ส.', active: 39, issue: 2 }, { name: 'อา.', active: 40, issue: 3 }]
   const inactive = devices.filter((d) => d.status === 'Inactive' || d.status === 'Warning').slice(0, 4)
   return <>
@@ -367,12 +521,16 @@ function Dashboard({ devices, buildings, zones, counts, setPage, onSelect }) {
     <div className="dashboard-footer"><span><i className="pulse-dot" /> All systems operational</span><span>ข้อมูลอัปเดตอัตโนมัติทุก 60 วินาที</span><span>โซนเวลา ICT · UTC+7</span></div>
   </>
 }
+// วาดกราฟเส้น SVG จากข้อมูลรายวันโดยไม่พึ่ง charting library เพิ่มเติม
 function ActivityChart({ data }) {
   const left = 35; const right = 590; const top = 10; const bottom = 158; const max = 50
+  // แปลง index ของข้อมูลเป็นตำแหน่งแนวนอนใน SVG
   const x = (index) => left + index * (right - left) / Math.max(data.length - 1, 1)
+  // แปลงค่าข้อมูลเป็นตำแหน่งแนวตั้งใน SVG
   const y = (value) => bottom - value / max * (bottom - top)
   const active = data.map((item, index) => ({ x: x(index), y: y(item.active), name: item.name, value: item.active }))
   const issues = data.map((item, index) => ({ x: x(index), y: y(item.issue), name: item.name, value: item.issue }))
+  // สร้าง SVG path ผ่านจุดข้อมูลตามลำดับ
   const line = (points) => points.map((point, index) => `${index ? 'L' : 'M'}${point.x},${point.y}`).join(' ')
   const area = `${line(active)} L${active[active.length - 1].x},${bottom} L${active[0].x},${bottom} Z`
   return <svg viewBox="0 0 600 195" preserveAspectRatio="none" role="img" aria-label="กราฟสรุปกิจกรรมอุปกรณ์ 7 วัน">
@@ -382,6 +540,7 @@ function ActivityChart({ data }) {
     {data.map((item, index) => <g key={item.name}><circle cx={x(index)} cy={y(item.active)} r="3" fill="#44c99a"><title>{item.name}: ทำงานปกติ {item.active}</title></circle><circle cx={x(index)} cy={y(item.issue)} r="3" fill="#f06b72"><title>{item.name}: พบปัญหา {item.issue}</title></circle><text x={x(index)} y="182" textAnchor="middle" fill="#778190" fontSize="9">{item.name}</text></g>)}
   </svg>
 }
+// วาด donut chart สัดส่วนสถานะอุปกรณ์เป็น SVG
 function StatusDonut({ data, total }) {
   const radius = 62; const circumference = 2 * Math.PI * radius
   let offset = 0
@@ -396,13 +555,16 @@ function StatusDonut({ data, total }) {
     {segments.map((item) => <circle key={item.key} cx="95" cy="95" r={radius} fill="none" stroke={item.color} strokeWidth="16" strokeDasharray={`${item.length} ${circumference - item.length}`} strokeDashoffset={-item.offset} transform="rotate(-90 95 95)"><title>{item.name}: {item.value}</title></circle>)}
   </svg>
 }
+// การ์ด KPI ที่ใช้ซ้ำใน Dashboard และหน้ารายงาน
 function MetricCard({ title, value, sub, icon: Icon, tone, trend }) {
   return <div className={`metric-card metric-${tone}`}><div className="metric-top"><span>{title}</span><span className="metric-icon"><Icon size={18} /></span></div><div className="metric-value">{String(value).padStart(2, '0')}<span className={`metric-trend trend-${tone}`}>{tone === 'green' ? <Check size={12} /> : tone === 'red' || tone === 'amber' ? <AlertTriangle size={12} /> : <Activity size={12} />}{trend}</span></div><div className="metric-sub">{sub}</div><div className="metric-accent" /></div>
 }
+// ตารางบริหารอุปกรณ์ พร้อมค้นหา กรอง แบ่งหน้า และ action ตามสิทธิ์ผู้ใช้
 function DevicesPage({ devices, allDevices, buildings, zones, search, setSearch, statusFilter, setStatusFilter, buildingFilter, setBuildingFilter, zoneFilter, setZoneFilter, canEdit, onAdd, onEdit, onDelete, onLocate }) {
   const [pageNo, setPageNo] = useState(1)
   const pageSize = 8; const pages = Math.max(1, Math.ceil(devices.length / pageSize))
   const current = devices.slice((pageNo - 1) * pageSize, pageNo * pageSize)
+  // กลับไปหน้าแรกทุกครั้งที่เงื่อนไขกรองเปลี่ยน
   useEffect(() => setPageNo(1), [search, statusFilter, buildingFilter, zoneFilter])
   return <>
     <PageHeader eyebrow="DEVICE INVENTORY" title="อุปกรณ์ Access Control" description="จัดการ ตรวจสอบ และติดตามสถานะอุปกรณ์ทั้งหมดในระบบ" action={canEdit && <button className="btn btn-primary" onClick={onAdd}><Plus size={16} /> เพิ่มอุปกรณ์</button>} />
@@ -418,6 +580,7 @@ function DevicesPage({ devices, allDevices, buildings, zones, search, setSearch,
     <div className="table-note"><ShieldCheck size={15} /> ข้อมูลอุปกรณ์ถูกบันทึกในเครื่องนี้โดยอัตโนมัติ <span>·</span> {devices.length} / {allDevices.length} รายการที่แสดง</div>
   </>
 }
+// แสดงสรุปอาคารและ action เพิ่ม/แก้ไข/ลบตามสิทธิ์
 function BuildingsPage({ buildings, devices, canEdit, onAdd, onEdit, onDelete }) {
   return <>
     <PageHeader eyebrow="FACILITY MANAGEMENT" title="อาคารและชั้น" description="จัดการอาคาร จำนวนชั้น และดูสรุปอุปกรณ์ในแต่ละพื้นที่" action={canEdit && <button className="btn btn-primary" onClick={onAdd}><Plus size={16} /> เพิ่มอาคาร</button>} />
@@ -426,6 +589,7 @@ function BuildingsPage({ buildings, devices, canEdit, onAdd, onEdit, onDelete })
     <div className="table-note"><CircleHelp size={15} /> ไม่สามารถลบอาคารที่ยังมีอุปกรณ์ Access Control เชื่อมโยงอยู่ได้</div>
   </>
 }
+// แสดง Control Zone จำนวนอุปกรณ์ และสถานะการใช้งานของแต่ละ Zone
 function ZonesPage({ zones, devices, canEdit, onAdd, onEdit, onDelete }) {
   return <>
     <PageHeader eyebrow="ACCESS POLICIES" title="Control Zones" description="กำหนดเขตควบคุมและจัดกลุ่มอุปกรณ์ตามระดับความปลอดภัย" action={canEdit && <button className="btn btn-primary" onClick={onAdd}><Plus size={16} /> เพิ่ม Zone</button>} />
@@ -433,12 +597,29 @@ function ZonesPage({ zones, devices, canEdit, onAdd, onEdit, onDelete }) {
     <div className="zone-grid">{zones.map((z) => { const items = devices.filter((d) => d.zone === z.id); const active = items.filter((d) => d.status === 'Active').length; return <article className="panel zone-card" key={z.id}><div className="zone-card-head"><span className="zone-color-block" style={{ background: `${z.color}18`, color: z.color, borderColor: `${z.color}40` }}><Layers3 size={19} /></span><div className="zone-card-actions">{canEdit && <><button onClick={() => onEdit(z)} aria-label="แก้ไข"><Pencil size={15} /></button><button onClick={() => onDelete(z)} aria-label="ลบ"><Trash2 size={15} /></button></>}</div></div><div className="eyebrow">{z.id}</div><h3>{z.name}</h3><p>{z.detail}</p><div className="zone-card-bottom"><span><DoorOpen size={14} />{items.length} อุปกรณ์</span><span className="zone-health"><i style={{ background: z.color }} />{active} Active</span></div><div className="zone-progress"><span style={{ background: z.color, width: `${items.length ? active / items.length * 100 : 0}%` }} /></div></article>})}</div>
   </>
 }
-function MapPage({ buildings, selectedBuilding, setSelectedBuilding, selectedFloor, setSelectedFloor, plan, floorDevices, allFloorDevices, zones, selectedDevice, setSelectedDevice, mapSearch, setMapSearch, zoom, setZoom, offset, setOffset, mapRef, dragging, onUpload, fileInput, onFile, onMarkerDown, onMapDown, onMapMove, onMapUp, onPlace, onDropDevice, canEdit, onDeviceEdit, onAdd, onBeginPlace, onLocate }) {
+// แสดง floor plan และ marker; ส่งงานบันทึก/ลากกลับไปยัง state handlers ใน App
+function MapPage({ buildings, selectedBuilding, setSelectedBuilding, selectedFloor, setSelectedFloor, plan, floorDevices, allFloorDevices, zones, selectedDevice, setSelectedDevice, mapSearch, setMapSearch, zoom, setZoom, offset, setOffset, mapRef, dragging, positionDraft, onSavePosition, onCancelPosition, onUpload, fileInput, onFile, onMarkerDown, onMapDown, onMapMove, onMapUp, onPlace, onDropDevice, canEdit, onDeviceEdit, onAdd, onBeginPlace, onLocate }) {
   const activeBuilding = buildings.find((b) => b.id === selectedBuilding) || buildings[0]
   const [dragOver, setDragOver] = useState(false)
   const [railOpen, setRailOpen] = useState(true)
+  const mapCanvasRef = useRef(null)
   const floors = Array.from({ length: activeBuilding?.floors || 1 }, (_, i) => String(i + 1))
+  const pendingPosition = positionDraft && allFloorDevices.some((device) => device.id === positionDraft.id) ? positionDraft : null
+  // ใช้ non-passive wheel listener เพื่อบล็อก browser zoom เมื่อผู้ใช้ Ctrl/Command + scroll
+  useEffect(() => {
+    const canvas = mapCanvasRef.current
+    if (!canvas) return
+    const handleWheel = (event) => {
+      if (!event.ctrlKey && !event.metaKey) return
+      event.preventDefault()
+      setZoom((current) => Math.max(0.65, Math.min(2.2, +(current + (event.deltaY < 0 ? 0.1 : -0.1)).toFixed(2))))
+    }
+    canvas.addEventListener('wheel', handleWheel, { passive: false })
+    return () => canvas.removeEventListener('wheel', handleWheel)
+  }, [setZoom])
+  // เมื่อเปลี่ยนอาคารหรือจำนวนชั้น ให้กลับชั้นที่เลือกเป็นชั้น 1 หากชั้นเดิมไม่มีแล้ว
   useEffect(() => { if (!floors.includes(selectedFloor)) setSelectedFloor('1') }, [activeBuilding?.id, activeBuilding?.floors])
+  // ยกเลิก selection เมื่อเปลี่ยนอาคารหรือชั้นเพื่อไม่แสดงรายละเอียดผิดพื้นที่
   useEffect(() => { if (selectedDevice && (selectedDevice.building !== selectedBuilding || selectedDevice.floor !== selectedFloor)) setSelectedDevice(null) }, [selectedBuilding, selectedFloor])
   return <>
     <PageHeader eyebrow="SPATIAL DEVICE MANAGEMENT" title="แผนผังอาคาร" description="สำรวจและจัดการตำแหน่งอุปกรณ์ Access Control บนแผนผัง" action={<div className="map-header-actions"><span className="live-pill"><i className="pulse-dot" /> {allFloorDevices.length} อุปกรณ์บนชั้นนี้</span>{canEdit && <button className="btn btn-primary" onClick={onAdd}><Plus size={16} /> เพิ่มอุปกรณ์</button>}</div>} />
@@ -446,12 +627,12 @@ function MapPage({ buildings, selectedBuilding, setSelectedBuilding, selectedFlo
       <section className="map-workspace panel">
         <div className="map-toolbar"><div className="map-selectors"><label><Building2 size={15} /><select value={selectedBuilding} onChange={(e) => setSelectedBuilding(e.target.value)}>{buildings.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}</select><ChevronDown size={14} /></label><span className="selector-divider" /><button className="floor-prev" disabled={Number(selectedFloor) <= 1} onClick={() => setSelectedFloor(String(Math.max(1, Number(selectedFloor) - 1)))}><ChevronLeft size={15} /></button><label className="floor-selector"><span>ชั้น</span><select value={selectedFloor} onChange={(e) => setSelectedFloor(e.target.value)}>{floors.map((f) => <option key={f} value={f}>{f}</option>)}</select><ChevronDown size={13} /></label><button className="floor-next" disabled={Number(selectedFloor) >= floors.length} onClick={() => setSelectedFloor(String(Math.min(floors.length, Number(selectedFloor) + 1)))}><ChevronRight size={15} /></button></div><div className="map-tools"><span className="map-coordinates">X: — &nbsp; Y: —</span><button onClick={() => { setZoom(1); setOffset({ x: 0, y: 0 }) }} title="รีเซ็ตมุมมอง"><RotateCcw size={15} /></button><button onClick={() => setZoom(Math.min(2.2, +(zoom + 0.15).toFixed(2)))} title="ซูมเข้า"><ZoomIn size={16} /></button><button onClick={() => setZoom(Math.max(0.65, +(zoom - 0.15).toFixed(2)))} title="ซูมออก"><ZoomOut size={16} /></button><span className="zoom-label">{Math.round(zoom * 100)}%</span><button onClick={() => setRailOpen(!railOpen)} title="แสดง/ซ่อนรายการ"><PanelLeftOpen size={16} /></button></div></div>
         <div className="map-location-bar"><span><MapPin size={14} />{activeBuilding?.name} <ChevronRight size={13} /> ชั้น {selectedFloor}</span><span className="map-plan-name">{plan ? <><FileText size={13} />{plan.name}</> : 'ยังไม่มีแผนผัง'}</span></div>
-        <div className={`map-canvas ${dragOver ? 'map-drag-over' : ''}`} onDragOver={(e) => { e.preventDefault(); setDragOver(true) }} onDragLeave={() => setDragOver(false)} onDrop={(e) => { e.preventDefault(); setDragOver(false); const file = e.dataTransfer.files?.[0]; if (file) onFile(file); else { const id = e.dataTransfer.getData('deviceId'); const device = allFloorDevices.find((d) => d.id === id); if (device) onDropDevice(e, device) } }} onPointerDown={(e) => { if (dragging?.place) onPlace(e); else if (!e.target.closest('.map-marker') && !e.target.closest('.map-legend') && !e.target.closest('.place-hint') && !e.target.closest('.floor-plan-pdf')) onMapDown(e) }} onPointerMove={onMapMove} onPointerUp={onMapUp} onPointerLeave={onMapUp} onWheel={(e) => { if (e.ctrlKey || e.metaKey) { e.preventDefault(); setZoom(Math.max(0.65, Math.min(2.2, +(zoom + (e.deltaY < 0 ? 0.1 : -0.1)).toFixed(2)))) } }} onClick={onPlace}>
+        <div ref={mapCanvasRef} className={`map-canvas ${dragOver ? 'map-drag-over' : ''}`} onDragOver={(e) => { e.preventDefault(); setDragOver(true) }} onDragLeave={() => setDragOver(false)} onDrop={(e) => { e.preventDefault(); setDragOver(false); const file = e.dataTransfer.files?.[0]; if (file) onFile(file); else { const id = e.dataTransfer.getData('deviceId'); const device = allFloorDevices.find((d) => d.id === id); if (device) onDropDevice(e, device) } }} onPointerDown={(e) => { if (dragging?.place) onPlace(e); else if (!e.target.closest('.map-marker') && !e.target.closest('.map-legend') && !e.target.closest('.place-hint') && !e.target.closest('.floor-plan-pdf')) onMapDown(e) }} onPointerMove={onMapMove} onPointerUp={onMapUp} onClick={onPlace}>
           <div className="map-grid-pattern" />
           <div className="map-viewport">
             <div ref={mapRef} className="map-plan" style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})` }}>
               {plan ? plan.type === 'application/pdf' ? <iframe title="Floor Plan PDF" className="floor-plan-pdf" src={plan.data} /> : <img className="floor-plan-image" src={plan.data} alt={`Floor plan ${plan.name}`} draggable="false" /> : <FloorPlanIllustration />}
-              <div className="plan-overlay">{floorDevices.filter((d) => !mapSearch || [d.id, d.name, d.door].some((v) => v.toLowerCase().includes(mapSearch.toLowerCase()))).map((d) => { const zone = zones.find((z) => z.id === d.zone); const selected = selectedDevice?.id === d.id; return <button key={d.id} className={`map-marker marker-${statusClass[d.status]} ${selected ? 'marker-selected' : ''} ${mapSearch && [d.id, d.name, d.door].some((v) => v.toLowerCase().includes(mapSearch.toLowerCase())) ? 'marker-search-hit' : ''}`} style={{ left: `${d.x}%`, top: `${d.y}%`, '--zone-color': zone?.color || '#8995a5' }} onPointerDown={(e) => onMarkerDown(e, d)} onClick={(e) => { e.stopPropagation(); setSelectedDevice(d) }} title={`${d.id} — ${d.name}`}><span className="marker-pin"><DoorOpen size={15} /></span><span className="marker-label">{d.name}</span></button> })}</div>
+              <div className="plan-overlay">{floorDevices.filter((d) => !mapSearch || [d.id, d.name, d.door].some((v) => v.toLowerCase().includes(mapSearch.toLowerCase()))).map((d) => { const zone = zones.find((z) => z.id === d.zone); const selected = selectedDevice?.id === d.id; const preview = dragging?.id === d.id && !dragging.place ? dragging : positionDraft?.id === d.id ? positionDraft : null; return <button key={d.id} className={`map-marker marker-${statusClass[d.status]} ${selected ? 'marker-selected' : ''} ${preview ? 'marker-position-preview' : ''} ${mapSearch && [d.id, d.name, d.door].some((v) => v.toLowerCase().includes(mapSearch.toLowerCase())) ? 'marker-search-hit' : ''}`} style={{ left: `${preview?.x ?? d.x}%`, top: `${preview?.y ?? d.y}%`, '--zone-color': zone?.color || '#8995a5' }} onPointerDown={(e) => onMarkerDown(e, d)} onClick={(e) => { e.stopPropagation(); setSelectedDevice(d) }} title={`${d.id} — ${d.name}`}><span className="marker-pin"><DoorOpen size={15} /></span><span className="marker-label">{d.name}</span></button> })}</div>
               {!plan && <div className="plan-caption"><Building2 size={14} /> {activeBuilding?.name.toUpperCase()} <span>·</span> FLOOR {String(selectedFloor).padStart(2, '0')}</div>}
             </div>
           </div>
@@ -460,7 +641,7 @@ function MapPage({ buildings, selectedBuilding, setSelectedBuilding, selectedFlo
           <div className="map-legend"><span><i className="legend-green" />ปกติ</span><span><i className="legend-red" />ไม่ทำงาน</span><span><i className="legend-yellow" />แจ้งเตือน</span><span><i className="legend-gray" />ไม่ทราบ</span></div>
         </div>
         <input ref={fileInput} type="file" accept=".png,.jpg,.jpeg,.pdf,image/png,image/jpeg,application/pdf" hidden onChange={(e) => { onFile(e.target.files?.[0]); e.target.value = '' }} />
-        <div className="map-footer"><span><CircleHelp size={14} /> ลากหมุดเพื่อบันทึกตำแหน่ง · Ctrl + scroll เพื่อซูม · ลากพื้นหลังเพื่อเลื่อน</span><button onClick={() => setZoom(1)}>รีเซ็ตมุมมอง</button></div>
+        <div className="map-footer"><span><CircleHelp size={14} /> ลากหมุดเพื่อปรับตำแหน่ง · Ctrl + scroll เพื่อซูม · ลากพื้นหลังเพื่อเลื่อน{pendingPosition && <b className="map-unsaved-label">มีตำแหน่งที่ยังไม่บันทึก</b>}</span><div className="map-footer-actions"><button onClick={() => setZoom(1)}>รีเซ็ตมุมมอง</button>{pendingPosition && canEdit && <><button className="map-cancel-position" onClick={onCancelPosition}>ยกเลิก</button><button className="map-save-position" onClick={onSavePosition}><Check size={13} /> บันทึกตำแหน่ง</button></>}</div></div>
       </section>
       {railOpen && <aside className="map-rail">
         <section className="panel map-rail-panel"><div className="rail-heading"><div><h3>อุปกรณ์บนชั้นนี้</h3><p>{floorDevices.length} รายการ · {activeBuilding?.name}</p></div><button className="icon-btn" onClick={() => setRailOpen(false)}><X size={17} /></button></div>
@@ -477,6 +658,7 @@ function MapPage({ buildings, selectedBuilding, setSelectedBuilding, selectedFlo
     </div>
   </>
 }
+// แผนผัง SVG ตัวอย่างที่แสดงเมื่อชั้นนั้นยังไม่มีไฟล์ floor plan
 function FloorPlanIllustration() {
   return <svg className="floor-plan-svg" viewBox="0 0 1000 670" preserveAspectRatio="xMidYMid meet" aria-label="ตัวอย่างแผนผังชั้น"><defs><pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r=".8" fill="#33404d" /></pattern></defs><rect width="1000" height="670" fill="url(#dots)" />
     <rect x="150" y="95" width="700" height="480" rx="4" fill="#111922" stroke="#758392" strokeWidth="2" /><rect x="183" y="129" width="300" height="150" fill="#17232b" stroke="#526372" strokeWidth="2" /><rect x="518" y="129" width="297" height="150" fill="#17232b" stroke="#526372" strokeWidth="2" /><rect x="183" y="299" width="185" height="240" fill="#17232b" stroke="#526372" strokeWidth="2" /><rect x="403" y="299" width="412" height="240" fill="#17232b" stroke="#526372" strokeWidth="2" />
@@ -486,6 +668,7 @@ function FloorPlanIllustration() {
     <path d="M127 95h23M150 72v23M850 72v23M850 95h23M127 575h23M150 575v23M850 575v23M850 575h23" stroke="#47c99a" strokeWidth="2" opacity=".8" />
   </svg>
 }
+// รวมรายงานและจัดกลุ่มข้อมูลตามสถานะ อาคาร ชั้น หรือ Control Zone
 function ReportsPage({ devices, buildings, zones, counts, exportCsv, exportExcel, exportPdf }) {
   const [report, setReport] = useState('all')
   const byBuilding = buildings.map((b) => ({ name: b.name, items: devices.filter((d) => d.building === b.id) }))
@@ -506,13 +689,16 @@ function ReportsPage({ devices, buildings, zones, counts, exportCsv, exportExcel
     <div className="table-note"><FileText size={14} /> Export Excel รองรับข้อมูลภาษาไทย · PDF ใช้เมนูพิมพ์ของเบราว์เซอร์แล้วเลือก “Save as PDF”</div>
   </>
 }
+// แถบสัดส่วนสถานะของอุปกรณ์ในกลุ่มรายงานหนึ่งกลุ่ม
 function ReportStatusBar({ items }) {
   const total = items.length || 1
   return <div className="report-stacked-bar">{['Active', 'Inactive', 'Warning', 'Unknown'].map((s) => <span key={s} className={statusClass[s]} style={{ width: `${items.filter((d) => d.status === s).length / total * 100}%` }} />)}</div>
 }
+// ตารางรายละเอียดอุปกรณ์ที่ใช้ซ้ำในรายงานทุกประเภท
 function DevicesReportTable({ devices, buildings, zones }) {
   return <div className="table-scroll"><table><thead><tr><th>Device ID</th><th>ชื่ออุปกรณ์</th><th>อาคาร / ชั้น</th><th>Control Zone</th><th>สถานะ</th></tr></thead><tbody>{devices.map((d) => <tr key={d.id}><td className="mono-id">{d.id}</td><td className="cell-primary">{d.name}</td><td>{buildings.find((b) => b.id === d.building)?.name} · ชั้น {d.floor}</td><td><span className="zone-label"><i style={{ background: zones.find((z) => z.id === d.zone)?.color }} />{zones.find((z) => z.id === d.zone)?.name}</span></td><td><StatusBadge status={d.status} /></td></tr>)}</tbody></table></div>
 }
+// แสดงประวัติกิจกรรมล่าสุดที่บันทึกใน browser
 function AuditPage({ audit }) {
   return <>
     <PageHeader eyebrow="SYSTEM ACTIVITY" title="บันทึกกิจกรรม" description="ตรวจสอบประวัติการเปลี่ยนแปลงและกิจกรรมของผู้ใช้งาน" action={<span className="audit-retention"><ShieldCheck size={15} /> บันทึกล่าสุด {audit.length} รายการ</span>} />
@@ -521,6 +707,7 @@ function AuditPage({ audit }) {
     </section><div className="table-note"><LockKeyhole size={14} /> Audit Log จัดเก็บในเบราว์เซอร์นี้ · ข้อมูลจะอยู่จนกว่าจะล้างข้อมูลไซต์</div>
   </>
 }
+// แสดงบัญชีและบทบาทตัวอย่าง; ไม่ใช่การจัดการผู้ใช้จาก server
 function UsersPage({ user, onSignOut }) {
   const users = [{ name: 'System Admin', email: 'admin@sentinel.co.th', role: 'Admin', status: 'Active' }, { name: 'Security Viewer', email: 'viewer@sentinel.co.th', role: 'Viewer', status: 'Active' }]
   return <>
@@ -530,16 +717,20 @@ function UsersPage({ user, onSignOut }) {
     <div className="table-note"><CircleHelp size={15} /> ต้นแบบนี้ใช้บัญชีทดลองและเก็บข้อมูลในเครื่อง · การยืนยันตัวตนแบบ production ควรเชื่อมต่อ Backend และระบบจัดการ Identity</div>
   </>
 }
+// Modal กลางสำหรับฟอร์มอุปกรณ์ อาคาร Zone และโปรไฟล์ผู้ใช้
 function Modal({ modal, onClose, onSaveDevice, onSaveBuilding, onSaveZone, buildings, zones, devices, user, onSignOut }) {
   const isEdit = Boolean(modal.value)
   const [error, setError] = useState('')
+  // แปลงฟอร์มอุปกรณ์เป็นข้อมูลตัวเลข/ข้อความและตรวจ Device ID ซ้ำก่อนส่งให้ App
   const submitDevice = (event) => {
     event.preventDefault(); const f = new FormData(event.currentTarget); const data = Object.fromEntries(f.entries())
     if (devices.some((d) => d.id === data.id && d.id !== modal.value?.id)) return setError('Device ID นี้มีอยู่แล้ว')
     data.x = Number(data.x); data.y = Number(data.y); onSaveDevice({ ...data, _oldId: modal.value?.id })
   }
-  const submitBuilding = (event) => { event.preventDefault(); const f = new FormData(event.currentTarget); onSaveBuilding({ id: String(f.get('id')).trim(), name: String(f.get('name')).trim(), floors: Number(f.get('floors')), address: String(f.get('address')).trim() }) }
-  const submitZone = (event) => { event.preventDefault(); const f = new FormData(event.currentTarget); onSaveZone({ id: String(f.get('id')).trim(), name: String(f.get('name')).trim(), detail: String(f.get('detail')).trim(), color: String(f.get('color')) }) }
+  // อ่านและ normalize ค่าฟอร์มอาคารก่อนส่งให้ handler บันทึกข้อมูล
+  const submitBuilding = (event) => { event.preventDefault(); const f = new FormData(event.currentTarget); onSaveBuilding({ id: modal.value?.id ?? String(f.get('id') || '').trim(), name: String(f.get('name')).trim(), floors: Number(f.get('floors')), address: String(f.get('address')).trim() }) }
+  // อ่านค่าฟอร์ม Control Zone แล้วส่งต่อให้ handler บันทึก
+  const submitZone = (event) => { event.preventDefault(); const f = new FormData(event.currentTarget); onSaveZone({ id: modal.value?.id ?? String(f.get('id') || '').trim(), name: String(f.get('name')).trim(), detail: String(f.get('detail')).trim(), color: String(f.get('color')) }) }
   const title = modal.type === 'device' ? `${isEdit ? 'แก้ไข' : 'เพิ่ม'}อุปกรณ์` : modal.type === 'building' ? `${isEdit ? 'แก้ไข' : 'เพิ่ม'}อาคาร` : modal.type === 'zone' ? `${isEdit ? 'แก้ไข' : 'เพิ่ม'} Control Zone` : 'บัญชีผู้ใช้งาน'
   if (modal.type === 'profile') return <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}><section className="profile-popover"><button className="modal-close" onClick={onClose}><X size={17} /></button><span className="avatar avatar-large">{user.name.split(' ').map((s) => s[0]).join('').slice(0, 2)}</span><h3>{user.name}</h3><p>{user.email}</p><span className={`role-pill ${user.role.toLowerCase()}`}>{user.role === 'Admin' ? 'ผู้ดูแลระบบ' : 'ผู้ชม'}</span><button className="btn btn-secondary profile-logout" onClick={onSignOut}><LogOut size={15} /> ออกจากระบบ</button></section></div>
   return <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}><section className="modal-box">

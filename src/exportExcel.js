@@ -1,7 +1,10 @@
 import { strToU8, zipSync } from 'fflate'
 
+// สร้างไฟล์ XLSX แบบ worksheet เดียวจากหัวตารางและแถวข้อมูล
 export function createExcelFile(columns, rows) {
+  // Escape อักขระสงวน XML ก่อนนำค่าข้อความใส่ใน worksheet
   const escapeXml = (value) => String(value ?? '').replace(/[<>&'"]/g, (char) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' })[char])
+  // แปลงเลขคอลัมน์ 0-based เป็นชื่อ Excel เช่น 0 -> A และ 26 -> AA
   const columnName = (index) => {
     let name = ''
     for (let n = index + 1; n; n = Math.floor((n - 1) / 26)) name = String.fromCharCode(65 + (n - 1) % 26) + name
@@ -20,5 +23,6 @@ export function createExcelFile(columns, rows) {
     'xl/_rels/workbook.xml.rels': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>`,
     'xl/worksheets/sheet1.xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${sheetRows}</sheetData></worksheet>`,
   }
+  // บีบอัดไฟล์ XML ทั้งหมดให้เป็น ZIP ตามโครงสร้างไฟล์ XLSX
   return zipSync(Object.fromEntries(Object.entries(files).map(([name, content]) => [name, strToU8(content)])), { level: 6 })
 }

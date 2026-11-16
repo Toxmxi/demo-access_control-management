@@ -4,6 +4,7 @@ import App from './App.jsx'
 import './styles.css'
 import './charts.css'
 
+// Mount แอป React ที่ root element ของหน้าเว็บ โดยเปิด StrictMode ในช่วงพัฒนา
 createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <App />
