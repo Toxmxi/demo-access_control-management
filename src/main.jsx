@@ -1,7 +1,7 @@
 import React from 'react'
 import { createRoot } from 'react-dom/client'
-import App from './App.jsx'
-import './styles.css'
+import App from './app.jsx'
+import './global-styles.css'
 import './charts.css'
 
 // Mount แอป React ที่ root element ของหน้าเว็บ โดยเปิด StrictMode ในช่วงพัฒนา

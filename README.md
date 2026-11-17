@@ -49,10 +49,18 @@ Vite dev/preview server bind กับ `127.0.0.1` และส่ง security h
 
 ## โครงสร้างโค้ดสำหรับผู้รับช่วงต่อ
 
-- `src/main.jsx` เป็น entry point สำหรับ mount React และโหลด stylesheet
-- `src/App.jsx` เก็บข้อมูลตัวอย่าง, state หลัก, handlers สำหรับ CRUD/รายงาน/แผนผัง และ React components ของแต่ละหน้า
-- `src/exportExcel.js` สร้างไฟล์ XLSX จากข้อมูลรายงาน
-- `src/styles.css` และ `src/charts.css` กำหนดหน้าตาและ chart styles
+- ไฟล์ใน `src/` ใช้ชื่อแบบ `kebab-case` เพื่อให้ค้นหาตามหน้าที่ได้สม่ำเสมอ
+- `src/main.jsx` เป็น entry point มาตรฐานของ Vite สำหรับ mount React และโหลด stylesheet
+- `src/app.jsx` เก็บ state หลักและ handlers สำหรับ CRUD, รายงาน และแผนผัง พร้อมประกอบหน้าและ layout หลัก
+- `src/components/shared-components.jsx` เก็บคอมโพเนนต์ที่ใช้ซ้ำ เช่น Login, page header, status badge และ metric card
+- `src/components/dashboard-page.jsx` เก็บหน้า Dashboard และกราฟ
+- `src/components/device-management-pages.jsx` เก็บหน้าจัดการอุปกรณ์ อาคาร และ Control Zone
+- `src/components/map-page.jsx` เก็บหน้าแผนผังและภาพประกอบ floor plan
+- `src/components/reports-page.jsx` เก็บหน้ารายงานและตารางรายงาน
+- `src/components/admin-pages.jsx` เก็บหน้า Audit Log, ผู้ใช้งาน และ modal
+- `src/app-constants.js` เก็บ navigation และค่าคงที่ที่ใช้ร่วมกัน; `src/csv-utils.js` เก็บ helper สำหรับ CSV
+- `src/excel-export.js` สร้างไฟล์ XLSX จากข้อมูลรายงาน
+- `src/global-styles.css` และ `src/charts.css` กำหนดหน้าตาและ chart styles
 - `vite.config.js`, `tailwind.config.js` และ `postcss.config.js` เป็นการตั้งค่าเครื่องมือ build/style
 
 คอมเมนต์ใน source อธิบายหน้าที่ของ helpers, handlers และ components จุดสำคัญ ข้อมูลที่ขึ้นต้นด้วย `initial...` และกราฟแนวโน้มใน Dashboard เป็นข้อมูลจำลอง ตัวอักษร “LIVE MONITORING” ในปัจจุบันจึงเป็นเพียงสถานะตัวอย่าง ไม่ได้เชื่อมต่ออุปกรณ์หรือรับข้อมูลสด
